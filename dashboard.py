@@ -170,7 +170,12 @@ def black_scholes_put(S0: float, K: float, r: float, sigma: float, T: float) -> 
 
 
 def estimar_vol_anual(precos: pd.Series, dias_ano: int = 252) -> float:
+    """Vol anual histórica baseada em retornos logarítmicos."""
+    if len(precos) < 2:
+        return 1e-6
     log_ret = np.log(precos / precos.shift(1)).dropna()
+    if log_ret.empty:
+        return 1e-6
     sigma_diaria = log_ret.std()
     return max(sigma_diaria * np.sqrt(dias_ano), 1e-6)
 
@@ -183,11 +188,13 @@ def backtest_ap(
     risk_free: float,
     dias_ano: int = 252,
 ):
+    """Backtest da AP com vol DINÂMICA por janela (até 252 dias antes da data de início)."""
     datas = precos.index
     if len(datas) <= prazo_du:
         return None
 
-    sigma_anual = estimar_vol_anual(precos, dias_ano=dias_ano)
+    # Vol global como fallback
+    sigma_global = estimar_vol_anual(precos, dias_ano=dias_ano)
 
     p0 = precos.values[:-prazo_du]
     p1 = precos.values[prazo_du:]
@@ -196,32 +203,47 @@ def backtest_ap(
     ret_div = []
     preco_put_bsl = []
     custo_put_pct = []
+    sigmas_usadas = []
 
     for i in range(len(p0)):
         ini = datas[i]
         fim = datas[i + prazo_du]
 
+        # Dividendos na janela
         soma_div = 0.0
         if not dividendos.empty:
             soma_div = dividendos.loc[(dividendos.index >= ini) & (dividendos.index <= fim)].sum()
         ret_div.append(soma_div / p0[i])
 
+        # Vol LOCAL: histórico até a data de início (últimos 252 dias)
+        hist_pre = precos.loc[:ini].tail(dias_ano)
+        sigma_local = estimar_vol_anual(hist_pre, dias_ano=dias_ano)
+        if sigma_local <= 0:
+            sigma_local = sigma_global
+        sigmas_usadas.append(sigma_local)
+
+        # Black-Scholes para essa janela
         S0 = p0[i]
         K = S0 * (1 - perda_max)
         T = prazo_du / dias_ano
 
-        put_price = black_scholes_put(S0, K, risk_free, sigma_anual, T)
+        put_price = black_scholes_put(S0, K, risk_free, sigma_local, T)
         preco_put_bsl.append(put_price)
         custo_put_pct.append(put_price / S0)
 
     ret_div = np.array(ret_div)
     preco_put_bsl = np.array(preco_put_bsl)
     custo_put_pct = np.array(custo_put_pct)
+    sigmas_usadas = np.array(sigmas_usadas)
 
+    # Retornos
     ret_ap_sem_div = ret_preco - custo_put_pct
     ret_ap_com_div = ret_preco + ret_div - custo_put_pct
 
+    # Hedge acionado (preço final abaixo da perda máxima)
     hedge_acionado = (ret_preco <= -perda_max).astype(int)
+
+    # Estrutura favorecida: hedge acionado OU retorno ≥ 0
     deu_certo = ((hedge_acionado == 1) | (ret_ap_com_div >= 0)).astype(int)
 
     rent_anual_op = (1 + ret_ap_com_div) ** (dias_ano / prazo_du) - 1
@@ -240,13 +262,15 @@ def backtest_ap(
             "hedge_acionado": hedge_acionado,
             "deu_certo": deu_certo,
             "bate_cdi": bate_cdi,
+            "sigma_local": sigmas_usadas,
         }
     )
 
     resumo = {
         "pct_deu_certo": deu_certo.mean(),
         "pct_bate_cdi": bate_cdi.mean(),
-        "vol_anual": sigma_anual,
+        # mantemos vol média só para debug se precisar no futuro
+        "vol_anual_media": sigmas_usadas.mean(),
     }
 
     return df, resumo, dividendos
@@ -408,28 +432,27 @@ with tab_ap:
         else:
             df_ap, resumo_ap, dividendos_ap = resultado_ap
 
-            # 2) Preço justo ATUAL da put (HOJE)
+            # 2) Vol "atual" (últimos 252 dias) e preço justo da put HOJE
+            sigma_atual = estimar_vol_anual(precos_ap.tail(252))
             S0_atual = precos_ap.iloc[-1]
             K_atual = S0_atual * (1 - perda_max_ap)
-            sigma_anual = resumo_ap["vol_anual"]
-            T = prazo_du_ap / 252
+            T_atual = prazo_du_ap / 252
 
             preco_put_hoje = black_scholes_put(
                 S0=S0_atual,
                 K=K_atual,
                 r=risk_free_ap,
-                sigma=sigma_anual,
-                T=T,
+                sigma=sigma_atual,
+                T=T_atual,
             )
             custo_pct_hoje = preco_put_hoje / S0_atual
 
-            # 3) Métricas principais
-            col1, col2, col3, col4, col5 = st.columns(5)
+            # 3) Métricas principais (SEM vol no topo)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Estrutura Favorável (%)", f"{resumo_ap['pct_deu_certo']*100:.1f}%")
             col2.metric("Bateu CDI (%)", f"{resumo_ap['pct_bate_cdi']*100:.1f}%")
             col3.metric("Preço Justo Atual (R$)", f"R$ {preco_put_hoje:.4f}")
             col4.metric("Custo Atual da Put (% do ativo)", f"{custo_pct_hoje*100:.2f}%")
-            col5.metric("Vol anual usada", f"{sigma_anual*100:.1f}%")
 
             # 4) Dividendos
             st.subheader("📌 Dividendos (data EX – Yahoo) – AP")
@@ -438,9 +461,9 @@ with tab_ap:
             else:
                 st.dataframe(dividendos_ap.rename("valor_por_acao"))
 
-            # 5) Preço justo da put por operação no backtest
-            st.subheader("📘 Preço justo da Put (BSL) por operação (histórico)")
-            st.dataframe(df_ap[["data_inicio", "data_fim", "preco_put_bsl"]])
+            # 5) Preço justo da put e vol local por operação (para debug/entendimento)
+            st.subheader("📘 Preço justo da Put (BSL) e Vol local por operação (histórico)")
+            st.dataframe(df_ap[["data_inicio", "data_fim", "preco_put_bsl", "custo_put_pct", "sigma_local"]])
 
             # 6) Gráfico AP x IBOV
             graf_ap = gerar_grafico_ap(df_ap, ticker_ap)
