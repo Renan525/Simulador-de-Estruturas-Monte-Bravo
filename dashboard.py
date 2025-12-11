@@ -860,6 +860,6 @@ A Fence oferece:
 - Estrutura de **custo zero** na montagem (via strikes)
 
 **Estrutura Favorável**  
-A operação é considerada favorável quando o retorno do ativo fica **inteiramente dentro da zona segura**:"""
+A operação é considerada favorável quando o retorno do ativo fica **inteiramente dentro da zona segura**:""")
 
 
