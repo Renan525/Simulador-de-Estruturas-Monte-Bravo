@@ -854,11 +854,6 @@ with tab_fence:
     st.markdown("""
 ### 📘 Como interpretar os resultados – Fence
 
-A Fence oferece:
-- Uma **faixa de proteção parcial** entre a PUT Alta e a PUT Baixa  
-- **Ganhos limitados** pela CALL vendida  
-- Estrutura de **custo zero** na montagem (via strikes)
-
 **Estrutura Favorável**  
 A operação é considerada favorável quando o retorno do ativo fica **inteiramente dentro da zona segura**:""")
 
