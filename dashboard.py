@@ -1,4 +1,4 @@
-import streamlit as st
+  import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -266,7 +266,7 @@ def backtest_ap(precos, dividendos, selic_df, prazo_du, perda_max):
             soma_div = dividendos.loc[(dividendos.index >= ini) & (dividendos.index <= fim)].sum()
         ret_div.append(soma_div / p0[i])
 
-        # Vol histórica dinâmica
+        # Vol dinâmica
         hist_pre = precos.loc[:ini].tail(DIAS_ANO)
         sigma_local = estimar_vol_anual(hist_pre)
         if sigma_local <= 0:
@@ -276,7 +276,7 @@ def backtest_ap(precos, dividendos, selic_df, prazo_du, perda_max):
         # Selic anual para precificação da put
         r_ano_local = obter_r_ano_selic(selic_df, ini)
 
-        # Put justa via BS
+        # Black–Scholes
         S0 = p0[i]
         K = S0 * (1 - perda_max)
         T = prazo_du / DIAS_ANO
@@ -294,7 +294,7 @@ def backtest_ap(precos, dividendos, selic_df, prazo_du, perda_max):
     sigmas_usadas = np.array(sigmas_usadas)
     selic_ops = np.array(selic_ops)
 
-    # Retorno total AP
+    # Retornos da AP
     ret_ap_sem_div = ret_preco - custo_put_pct
     ret_ap_com_div = ret_preco + ret_div - custo_put_pct
 
@@ -350,22 +350,21 @@ def gerar_grafico_ap(df, ticker):
 # STREAMLIT – DASHBOARD COMPLETO
 # ============================================================
 
-st.set_page_config(page_title="Backtest de Estruturas – Collar & AP", layout="wide")
+st.set_page_config(page_title="Backtest – Collar & AP", layout="wide")
 
 st.title("📈 Backtest de Estruturas – Collar & Alocação Protegida")
 st.markdown(
     """
-    Backtest completo utilizando **preços reais (Yahoo)**, **dividendos**,  
-    volatilidade histórica dinâmica e **Selic diária histórica via Banco Central**.
+    Backtest completo usando **preços reais**, **dividendos**,  
+    **volatilidade dinâmica**, e **Selic diária oficial do Banco Central**.
     """
 )
 
 # Carregar Selic
 try:
     selic_df = carregar_selic_com_fator()
-except Exception as e:
-    selic_df = None
-    st.error("❌ Erro ao carregar a Selic do Banco Central. Verifique sua internet.")
+except Exception:
+    st.error("❌ Erro ao carregar a Selic do Banco Central.")
     st.stop()
 
 tab_collar, tab_ap = st.tabs(["📊 Collar", "🛡️ Alocação Protegida (AP)"])
@@ -380,12 +379,14 @@ with tab_collar:
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Configurações – Collar**")
 
-    ticker_c = st.sidebar.text_input("Ticker (Collar):", "EZTC3.SA")
-    prazo_du_c = st.sidebar.number_input("Prazo (dias úteis)", 10, 252, 63)
-    ganho_max_c = st.sidebar.number_input("Ganho Máx (%)", 0.0, 100.0, 8.0) / 100
-    perda_max_c = st.sidebar.number_input("Perda Máx (%)", 0.0, 100.0, 8.0) / 100
+    ticker_c = st.sidebar.text_input("Ticker (Collar):", "EZTC3.SA", key="ticker_c")
+    prazo_du_c = st.sidebar.number_input("Prazo (dias úteis) – Collar", 10, 252, 63, key="prazo_c")
+    ganho_max_c = st.sidebar.number_input("Ganho Máx (%)", 0.0, 100.0, 8.0, key="ganho_c") / 100
+    perda_max_c = st.sidebar.number_input("Perda Máx (%)", 0.0, 100.0, 8.0, key="perda_c") / 100
 
-    if st.sidebar.button("🚀 Rodar Collar"):
+    rodar_c = st.sidebar.button("🚀 Rodar Collar", key="rodar_c")
+
+    if rodar_c:
         precos_c, dividendos_c = carregar_preco_e_dividendos(ticker_c)
         resultado_c = backtest_collar(precos_c, dividendos_c, selic_df, prazo_du_c, ganho_max_c, perda_max_c)
 
@@ -421,11 +422,13 @@ with tab_ap:
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Configurações – AP**")
 
-    ticker_ap = st.sidebar.text_input("Ticker (AP):", "EZTC3.SA")
-    prazo_du_ap = st.sidebar.number_input("Prazo (dias úteis)", 10, 252, 63)
-    perda_max_ap = st.sidebar.number_input("Perda Máxima Protegida (%)", 0.0, 100.0, 5.0) / 100
+    ticker_ap = st.sidebar.text_input("Ticker (AP):", "EZTC3.SA", key="ticker_ap")
+    prazo_du_ap = st.sidebar.number_input("Prazo (dias úteis) – AP", 10, 252, 63, key="prazo_ap")
+    perda_max_ap = st.sidebar.number_input("Perda Máxima Protegida (%)", 0.0, 100.0, 5.0, key="perda_ap") / 100
 
-    if st.sidebar.button("🚀 Rodar AP"):
+    rodar_ap = st.sidebar.button("🚀 Rodar AP", key="rodar_ap")
+
+    if rodar_ap:
         precos_ap, dividendos_ap = carregar_preco_e_dividendos(ticker_ap)
         resultado_ap = backtest_ap(precos_ap, dividendos_ap, selic_df, prazo_du_ap, perda_max_ap)
 
@@ -434,7 +437,7 @@ with tab_ap:
         else:
             df_ap, resumo_ap, dividendos_ap = resultado_ap
 
-            # Preço PUT atual
+            # Cálculo do preço da PUT hoje
             sigma_atual = estimar_vol_anual(precos_ap.tail(DIAS_ANO))
             S0_atual = precos_ap.iloc[-1]
             K_atual = S0_atual * (1 - perda_max_ap)
@@ -449,7 +452,7 @@ with tab_ap:
             col1.metric("Estrutura Favorável (%)", f"{resumo_ap['pct_deu_certo']*100:.1f}%")
             col2.metric("Bateu Selic (%)", f"{resumo_ap['pct_bate_selic']*100:.1f}%")
             col3.metric("PUT justa hoje (R$)", f"R$ {preco_put_hoje:.4f}")
-            col4.metric("Custo PUT (% do ativo)", f"{custo_pct_hoje*100:.2f}%")
+            col4.metric("Custo PUT (% ativo)", f"{custo_pct_hoje*100:.2f}%")
 
             st.subheader("Dividendos")
             if dividendos_ap.empty:
@@ -457,7 +460,7 @@ with tab_ap:
             else:
                 st.dataframe(dividendos_ap.rename("valor_por_acao"))
 
-            st.subheader("Histórico: PUT justa, Selic e Vol")
+            st.subheader("Histórico: PUT, Selic e Vol")
             st.dataframe(df_ap[["data_inicio", "data_fim", "preco_put_bsl", "custo_put_pct", "selic_periodo", "sigma_local"]])
 
             st.subheader("Gráfico")
