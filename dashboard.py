@@ -188,9 +188,7 @@ def backtest_collar(precos, dividendos, cdi_df, prazo_du, ganho_max, perda_max):
         np.where(ret_defesa > 0, ret_preco + ret_defesa, ret_preco - limit_ganho),
     )
 
-    # Regra: estrutura favorável se:
-    # - proteção foi acionada OU
-    # - não houve limitação de ganho
+    # Regra: favorável se hedge acionado OU não houve limitação de ganho
     deu_certo = ((ret_defesa > 0) | (limit_ganho == 0)).astype(int)
 
     ret_op_com_div = ret_op_sem_div + ret_div
@@ -301,7 +299,7 @@ def backtest_ap(precos, dividendos, cdi_df, prazo_du, perda_max, pct_put_input):
     ret_ap_com_div = ret_preco + ret_div - custo_put_pct
 
     hedge_acionado = (ret_preco <= -perda_max).astype(int)
-    # Regra: deu certo se o hedge foi necessário OU a operação se pagou (>= 0)
+    # Regra: deu certo se hedge acionado OU operação >= 0%
     deu_certo = ((hedge_acionado == 1) | (ret_ap_com_div >= 0)).astype(int)
 
     bate_cdi = (ret_ap_com_div > cdi_periodos).astype(int)
@@ -422,7 +420,7 @@ def backtest_financiamento(precos, dividendos, cdi_df, prazo_du, ganho_max, pct_
     ret_total = ret_limitado + ret_div + premio_call_pct
 
     # Upside perdido por causa do strike
-    upside_perdido = ret_preco - ret_limitado  # >= 0 quando o ativo passa do strike
+    upside_perdido = ret_preco - ret_limitado  # >= 0 qdo o ativo passa do strike
 
     # Regra: estrutura favorável SE upside perdido <= prêmio da call
     deu_certo = (upside_perdido <= premio_call_pct).astype(int)
@@ -456,6 +454,104 @@ def backtest_financiamento(precos, dividendos, cdi_df, prazo_du, ganho_max, pct_
         "preco_call_justa_hoje": preco_call_justa_hoje,
         "preco_call_cotada": preco_call_cotada,
         "markup_call": markup_call,
+    }
+
+    return df, resumo, dividendos
+
+
+# ============================================================
+# FENCE – BACKTEST (PUT alta, PUT baixa, CALL) – CUSTO ZERO
+# ============================================================
+
+def backtest_fence(precos, dividendos, cdi_df, prazo_du, perda_protegida, perda_max, ganho_max):
+    """
+    Fence clássica (custo zero):
+    - PUT Alta: perda_protegida  (valor negativo, ex: -0.05)
+    - PUT Baixa: perda_max       (valor negativo, ex: -0.15)
+    - CALL Vendida: ganho_max    (positivo, ex: 0.10)
+    """
+
+    datas = precos.index
+    if len(datas) <= prazo_du:
+        return None
+
+    p0 = precos.values[:-prazo_du]
+    p1 = precos.values[prazo_du:]
+    ret_preco = p1 / p0 - 1
+
+    ret_div, cdi_periodos, cdi_debug = [], [], []
+
+    for i in range(len(p0)):
+        ini, fim = datas[i], datas[i + prazo_du]
+
+        # Dividendos
+        soma_div = (
+            dividendos.loc[(dividendos.index >= ini) & (dividendos.index <= fim)].sum()
+            if not dividendos.empty else 0.0
+        )
+        ret_div.append(soma_div / p0[i])
+
+        # CDI
+        cdi_acum, serie = riskfree_periodo(cdi_df, ini, fim)
+        cdi_periodos.append(cdi_acum)
+        cdi_debug.append(serie)
+
+    ret_div = np.array(ret_div)
+    cdi_periodos = np.array(cdi_periodos)
+
+    # ============================================================
+    # PAYOFF FENCE
+    # ============================================================
+
+    ret_final = np.zeros(len(ret_preco))
+
+    for i, rp in enumerate(ret_preco):
+
+        if rp > ganho_max:
+            # limite de ganho pela CALL
+            ret_final[i] = ganho_max
+
+        elif perda_protegida <= rp <= ganho_max:
+            # zona onde o cliente participa 1:1 do ativo
+            ret_final[i] = rp
+
+        elif perda_max < rp < perda_protegida:
+            # faixa entre PUT alta e PUT baixa: retorno segurado em perda_protegida
+            ret_final[i] = perda_protegida
+
+        else:  # rp <= perda_max
+            # abaixo da PUT baixa a perda volta a crescer
+            ret_final[i] = rp + (perda_protegida - perda_max)
+
+    # Total com dividendos
+    ret_total = ret_final + ret_div
+
+    # ============================================================
+    # Favorável (critério institucional)
+    # ============================================================
+    # Fence é favorável quando o retorno do ATIVO
+    # ficou dentro da zona segura:
+    # perda_max <= retorno_ativo <= ganho_max
+    deu_certo = ((ret_preco >= perda_max) & (ret_preco <= ganho_max)).astype(int)
+
+    bate_cdi = (ret_total > cdi_periodos).astype(int)
+
+    df = pd.DataFrame({
+        "data_inicio": datas[:-prazo_du],
+        "data_fim": datas[prazo_du:],
+        "ret_preco": ret_preco,
+        "ret_dividendos": ret_div,
+        "ret_final_payoff": ret_final,
+        "ret_total": ret_total,
+        "cdi_periodo": cdi_periodos,
+        "deu_certo": deu_certo,
+        "bate_cdi": bate_cdi,
+        "cdi_detalhado": cdi_debug,
+    })
+
+    resumo = {
+        "pct_deu_certo": deu_certo.mean(),
+        "pct_bate_cdi": bate_cdi.mean(),
     }
 
     return df, resumo, dividendos
@@ -519,13 +615,31 @@ def gerar_grafico_fin(df, ticker):
     return buf
 
 
+def gerar_grafico_fence(df, ticker):
+    dfp = df.copy()
+    dfp["ret_ibov"] = gerar_ret_ibov(dfp)
+
+    plt.figure(figsize=(12, 5))
+    plt.plot(dfp["data_inicio"], dfp["ret_total"], label=f"Fence – {ticker}")
+    plt.plot(dfp["data_inicio"], dfp["ret_ibov"], label="IBOV")
+    plt.axhline(0, color="black")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+    buf.seek(0)
+    plt.close()
+    return buf
+
+
 # ============================================================
 # DASHBOARD STREAMLIT
 # ============================================================
 
 st.set_page_config(page_title="Backtest – Estruturas", layout="wide")
 
-st.title("📈 Backtest – Collar, AP & Financiamento (CDI + Spreads)")
+st.title("📈 Backtest – Collar, AP, Financiamento & Fence (CDI + Spreads)")
 st.markdown(
     "Backtest com **CDI (BACEN série 12)**, volatilidade histórica dinâmica e "
     "**spreads de PUT/CALL** aplicados sobre os prêmios das opções."
@@ -538,8 +652,13 @@ except Exception:
     st.error("Erro ao carregar CDI (série 12) do BACEN.")
     st.stop()
 
-tab_c, tab_ap, tab_fin = st.tabs(
-    ["📊 Collar", "🛡️ AP (Alocação Protegida)", "💼 Financiamento (Covered Call)"]
+tab_c, tab_ap, tab_fin, tab_fence = st.tabs(
+    [
+        "📊 Collar",
+        "🛡️ AP (Alocação Protegida)",
+        "💼 Financiamento (Covered Call)",
+        "🧱 Fence"
+    ]
 )
 
 # ------------------------------------------------------------
@@ -600,7 +719,7 @@ A AP é considerada favorável quando ocorre pelo menos uma das condições:
    – o ativo caiu mais do que a perda máxima protegida.
 
 2. O resultado final da operação foi maior ou igual a 0%  
-   – considerando retorno do ativo, dividendos e o custo da PUT.
+   – considerando retorno do ativo, dividendos e o custo da PUT (incluindo o spread).
 
 Em termos de cálculo, o backtest considera:
 
@@ -671,9 +790,9 @@ Em outras palavras: o cliente só é penalizado se o ativo subir muito além do 
 **O que o backtest considera:**
 
 - Retorno do ativo no período  
-- Ganho limitado pelo strike da call (ganho máximo)  
+- Ganho limitado pelo strike da CALL (ganho máximo)  
 - Dividendos recebidos  
-- Prêmio da call (ajustado pelo spread)  
+- Prêmio da CALL (ajustado pelo spread)  
 - CDI acumulado no período
 
 **Spread da CALL**  
@@ -682,7 +801,7 @@ O sistema calcula o preço justo teórico (Black–Scholes) e compara com o prê
 
 - spread_call = prêmio_cotado / prêmio_justo  
 
-Esse spread é aplicado em todas as datas históricas, simulando o fato de que, na prática, a call flex é vendida com desconto em relação ao preço teórico.
+Esse spread é aplicado em todas as datas históricas, simulando o fato de que, na prática, a CALL flex é vendida com desconto em relação ao preço teórico.
 """)
 
     ticker_f = st.text_input("Ticker:", "EZTC3.SA", key="t_fin")
@@ -725,3 +844,23 @@ Esse spread é aplicado em todas as datas históricas, simulando o fato de que, 
 
             st.subheader("Detalhamento")
             st.dataframe(df_fin)
+
+# ------------------------------------------------------------
+# FENCE – PUT Alta, PUT Baixa, CALL
+# ------------------------------------------------------------
+with tab_fence:
+    st.subheader("🧱 Fence (PUT Spread + CALL)")
+
+    st.markdown("""
+### 📘 Como interpretar os resultados – Fence
+
+A Fence oferece:
+- Uma **faixa de proteção parcial** entre a PUT Alta e a PUT Baixa  
+- **Ganhos limitados** pela CALL vendida  
+- Estrutura de **custo zero** na montagem (ajuste via strikes).
+
+**Estrutura Favorável**  
+A operação é considerada favorável quando o retorno do ativo fica **inteiro dentro da zona segura**:
+
+```text
+Perda Máxima (PUT Baixa) ≤ Retorno do ativo ≤ Ganho Máximo (CALL)
