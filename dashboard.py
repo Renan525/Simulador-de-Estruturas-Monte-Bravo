@@ -189,8 +189,8 @@ def backtest_collar(precos, dividendos, cdi_df, prazo_du, ganho_max, perda_max):
     )
 
     # Regra: estrutura favorável se:
-    # - ou o hedge foi acionado (protegeu)
-    # - ou não houve limitação de ganho
+    # - proteção foi acionada OU
+    # - não houve limitação de ganho
     deu_certo = ((ret_defesa > 0) | (limit_ganho == 0)).astype(int)
 
     ret_op_com_div = ret_op_sem_div + ret_div
@@ -548,6 +548,21 @@ tab_c, tab_ap, tab_fin = st.tabs(
 with tab_c:
     st.subheader("📊 Collar")
 
+    st.markdown("""
+### 📘 Como interpretar os resultados – Collar
+
+**Estrutura Favorável**  
+A estratégia de Collar é considerada favorável quando o retorno do ativo **não foi limitado pela trava de call**.  
+Ou seja, ou o hedge de perda foi acionado, ou o ativo não subiu o suficiente para bater no ganho máximo e reduzir o upside do cliente.
+
+**O que o backtest considera:**  
+- Retorno do ativo no período  
+- Trava de perda (put)  
+- Trava de ganho (call)  
+- Dividendos recebidos  
+- CDI acumulado no mesmo intervalo
+""")
+
     ticker_c = st.text_input("Ticker:", "EZTC3.SA", key="t_c")
     prazo_du_c = st.number_input("Prazo (dias úteis)", 10, 252, 63, key="p_c")
     ganho_c = st.number_input("Ganho Máx (%)", 0.0, 50.0, 8.0, key="g_c") / 100
@@ -574,6 +589,35 @@ with tab_c:
 # ------------------------------------------------------------
 with tab_ap:
     st.subheader("🛡️ Alocação Protegida (PUT com prêmio em % do ativo)")
+
+    st.markdown("""
+### 📘 Como interpretar os resultados – Alocação Protegida (AP)
+
+**Estrutura Favorável**  
+A AP é considerada favorável quando ocorre pelo menos uma das condições:
+
+1. O hedge foi acionado  
+   – o ativo caiu mais do que a perda máxima protegida.
+
+2. O resultado final da operação foi maior ou igual a 0%  
+   – considerando retorno do ativo, dividendos e o custo da PUT.
+
+Em termos de cálculo, o backtest considera:
+
+- Retorno do ativo no período  
+- Dividendos recebidos  
+- Custo da PUT (justo por Black–Scholes)  
+- Spread da PUT informado pelo operador  
+- CDI acumulado no período
+
+**Spread da PUT**  
+O operador informa o prêmio da PUT em % do preço do ativo hoje.  
+O sistema calcula o preço justo teórico (Black–Scholes) e compara com o prêmio informado, gerando um spread:
+
+- spread_put = prêmio_cotado / prêmio_justo  
+
+Esse spread é aplicado em todas as datas históricas, simulando o custo real de mercado da PUT ao longo do backtest.
+""")
 
     ticker_ap = st.text_input("Ticker:", "EZTC3.SA", key="t_ap")
     prazo_du_ap = st.number_input("Prazo (dias úteis)", 10, 252, 63, key="p_ap")
@@ -613,6 +657,33 @@ with tab_ap:
 # ------------------------------------------------------------
 with tab_fin:
     st.subheader("💼 Financiamento (Covered Call com prêmio em % do ativo)")
+
+    st.markdown("""
+### 📘 Como interpretar os resultados – Financiamento (Covered Call)
+
+**Estrutura Favorável**  
+A Covered Call é considerada favorável quando:
+
+- O ganho limitado pela trava de call (o upside perdido acima do strike) é **menor ou igual** ao prêmio recebido pela venda da call.
+
+Em outras palavras: o cliente só é penalizado se o ativo subir muito além do strike e o ganho que ele deixa de capturar for maior do que o prêmio que recebeu na call.
+
+**O que o backtest considera:**
+
+- Retorno do ativo no período  
+- Ganho limitado pelo strike da call (ganho máximo)  
+- Dividendos recebidos  
+- Prêmio da call (ajustado pelo spread)  
+- CDI acumulado no período
+
+**Spread da CALL**  
+O operador informa o prêmio da CALL em % do preço do ativo hoje.  
+O sistema calcula o preço justo teórico (Black–Scholes) e compara com o prêmio informado:
+
+- spread_call = prêmio_cotado / prêmio_justo  
+
+Esse spread é aplicado em todas as datas históricas, simulando o fato de que, na prática, a call flex é vendida com desconto em relação ao preço teórico.
+""")
 
     ticker_f = st.text_input("Ticker:", "EZTC3.SA", key="t_fin")
     prazo_du_f = st.number_input("Prazo (dias úteis)", 10, 252, 63, key="p_fin")
