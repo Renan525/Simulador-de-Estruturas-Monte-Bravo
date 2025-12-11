@@ -968,7 +968,5 @@ Ou seja:
             st.subheader("Tabela Detalhada")
             st.dataframe(df_fence)
 
-**Estrutura Favorável** 
-A operação é considerada favorável quando o retorno do ativo fica **inteiramente dentro da zona segura**:""")
 
 
